@@ -11,7 +11,7 @@ import {
 
 const PRICE_SCALE = 100_000
 
-type SimulatorOptions = {
+export type MarketDataSimulatorOptions = {
   readonly onMessage: (message: MarketDataMessage) => void
   readonly priceIntervalMs?: number
   readonly heartbeatIntervalMs?: number
@@ -49,7 +49,7 @@ export class MarketDataSimulator {
     random = Math.random,
     now = Date.now,
     createStreamId = () => `stream-${crypto.randomUUID()}`,
-  }: SimulatorOptions) {
+  }: MarketDataSimulatorOptions) {
     assertPositiveInterval(priceIntervalMs, 'priceIntervalMs')
     assertPositiveInterval(heartbeatIntervalMs, 'heartbeatIntervalMs')
 

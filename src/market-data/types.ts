@@ -89,6 +89,27 @@ export type MarketDataMessage =
   | PriceUpdateMessage
   | HeartbeatMessage
 
+/** Client-to-server request to begin streaming one or more instruments. */
+export type SubscribeMessage = {
+  readonly type: 'subscribe'
+  readonly schemaVersion: 1
+  readonly requestId: string
+  readonly instruments: readonly CurrencyPair[]
+}
+
+/** Server confirmation that the requested subscription is active. */
+export type SubscriptionAckMessage = {
+  readonly type: 'subscription_ack'
+  readonly schemaVersion: 1
+  readonly requestId: string
+  readonly subscriptionId: string
+  readonly instruments: readonly CurrencyPair[]
+  readonly sentAt: number
+}
+
+export type ClientMessage = SubscribeMessage
+export type ServerMessage = MarketDataMessage | SubscriptionAckMessage
+
 /** Example messages document one valid stream without running a simulator. */
 export const exampleSnapshotMessage: PriceSnapshotMessage = {
   type: 'price_snapshot',
