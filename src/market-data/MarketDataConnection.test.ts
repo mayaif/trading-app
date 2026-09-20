@@ -16,6 +16,7 @@ import {
 import type {
   HeartbeatMessage,
   MarketDataMessage,
+  PriceUpdateMessage,
   PriceSnapshotMessage,
   ServerMessage,
   SubscriptionAckMessage,
@@ -333,6 +334,135 @@ describe('MarketDataConnection', () => {
     expect(connection.status).toBe('disconnected')
     expect(createSocket).toHaveBeenCalledOnce()
   })
+
+  it('marks prices stale without declaring the transport dead', () => {
+    const socket = new ManualSocket()
+    const issues: ConnectionIssue[] = []
+    const connection = new MarketDataConnection({
+      createSocket: () => socket,
+      createRequestId: () => 'request-001',
+      healthCheckIntervalMs: 25,
+      priceStaleAfterMs: 100,
+      transportTimeoutMs: 500,
+      onIssue: (issue) => issues.push(issue),
+    })
+    connection.connect()
+    socket.open()
+    socket.receiveMessage(acknowledgement)
+    socket.receiveMessage(snapshot)
+
+    vi.advanceTimersByTime(100)
+
+    expect(connection.status).toBe('stale')
+    expect(issues).toContainEqual({ type: 'price_stale', ageMs: 100 })
+    expect(socket.closeCalls).toHaveLength(0)
+  })
+
+  it('uses heartbeats for liveness but not price freshness', () => {
+    const socket = new ManualSocket()
+    const connection = new MarketDataConnection({
+      createSocket: () => socket,
+      createRequestId: () => 'request-001',
+      healthCheckIntervalMs: 20,
+      priceStaleAfterMs: 60,
+      transportTimeoutMs: 100,
+    })
+    connection.connect()
+    socket.open()
+    socket.receiveMessage(acknowledgement)
+    socket.receiveMessage(snapshot)
+
+    vi.advanceTimersByTime(40)
+    socket.receiveMessage(heartbeat)
+    vi.advanceTimersByTime(20)
+
+    expect(connection.status).toBe('stale')
+    expect(socket.closeCalls).toHaveLength(0)
+    expect(connection.lastMessageReceivedAt).toBeGreaterThan(
+      connection.lastPriceReceivedAt!,
+    )
+  })
+
+  it('returns from stale to live when a fresh price update arrives', () => {
+    const socket = new ManualSocket()
+    const connection = new MarketDataConnection({
+      createSocket: () => socket,
+      createRequestId: () => 'request-001',
+      healthCheckIntervalMs: 25,
+      priceStaleAfterMs: 100,
+      transportTimeoutMs: 500,
+    })
+    connection.connect()
+    socket.open()
+    socket.receiveMessage(acknowledgement)
+    socket.receiveMessage(snapshot)
+    vi.advanceTimersByTime(100)
+    expect(connection.status).toBe('stale')
+
+    socket.receiveMessage(priceUpdate)
+
+    expect(connection.status).toBe('live')
+    expect(connection.lastPriceReceivedAt).toBe(Date.now())
+  })
+
+  it('closes and reconnects when accepted messages stop arriving', () => {
+    const sockets = [new ManualSocket(), new ManualSocket()]
+    const createSocket = vi.fn(() => sockets.shift()!)
+    const issues: ConnectionIssue[] = []
+    const connection = new MarketDataConnection({
+      createSocket,
+      createRequestId: () => 'request-001',
+      healthCheckIntervalMs: 20,
+      priceStaleAfterMs: 500,
+      transportTimeoutMs: 100,
+      reconnectBaseDelayMs: 50,
+      reconnectMaxDelayMs: 50,
+      reconnectJitterRatio: 0,
+      onIssue: (issue) => issues.push(issue),
+    })
+    connection.connect()
+    const socket = createSocket.mock.results[0].value
+    socket.open()
+    socket.receiveMessage(acknowledgement)
+    socket.receiveMessage(snapshot)
+
+    vi.advanceTimersByTime(100)
+
+    expect(socket.closeCalls).toContainEqual({
+      code: 4003,
+      reason: 'Market data transport timeout',
+    })
+    expect(issues).toContainEqual({ type: 'transport_timeout', silentForMs: 100 })
+
+    socket.finishClose(4003, true)
+    expect(connection.status).toBe('reconnecting')
+    vi.advanceTimersByTime(50)
+    expect(createSocket).toHaveBeenCalledTimes(2)
+  })
+
+  it('does not treat malformed frames as healthy transport activity', () => {
+    const socket = new ManualSocket()
+    const connection = new MarketDataConnection({
+      createSocket: () => socket,
+      createRequestId: () => 'request-001',
+      healthCheckIntervalMs: 20,
+      priceStaleAfterMs: 500,
+      transportTimeoutMs: 100,
+    })
+    connection.connect()
+    socket.open()
+    socket.receiveMessage(acknowledgement)
+    socket.receiveMessage(snapshot)
+
+    vi.advanceTimersByTime(60)
+    socket.receive('{"unrecognized":true}')
+    vi.advanceTimersByTime(40)
+
+    expect(socket.closeCalls).toContainEqual({
+      code: 4003,
+      reason: 'Market data transport timeout',
+    })
+  })
 })
 
 class ManualSocket implements MarketDataSocket {
@@ -396,4 +526,19 @@ const heartbeat: HeartbeatMessage = {
   streamId: 'stream-001',
   sequence: 2,
   sentAt: 1_726_656_001_000,
+}
+
+const priceUpdate: PriceUpdateMessage = {
+  type: 'price_update',
+  schemaVersion: 1,
+  streamId: 'stream-001',
+  sequence: 2,
+  sentAt: 1_726_656_001_000,
+  quote: {
+    instrument: 'EUR/USD',
+    venue: 'CITI',
+    bid: { price: 1.08472, sizeInBaseCurrency: 1_000_000 },
+    ask: { price: 1.0848, sizeInBaseCurrency: 1_000_000 },
+    tradable: true,
+  },
 }

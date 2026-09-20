@@ -20,6 +20,7 @@ export type ConnectionStatus =
   | 'subscribing'
   | 'awaiting_snapshot'
   | 'live'
+  | 'stale'
   | 'out_of_sync'
   | 'reconnecting'
   | 'disconnecting'
@@ -51,6 +52,14 @@ export type ConnectionIssue =
       readonly type: 'connection_error'
       readonly error: unknown
     }
+  | {
+      readonly type: 'transport_timeout'
+      readonly silentForMs: number
+    }
+  | {
+      readonly type: 'price_stale'
+      readonly ageMs: number
+    }
 
 export type ReconnectSchedule = {
   readonly attempt: number
@@ -65,6 +74,10 @@ export type MarketDataConnectionOptions = {
   readonly reconnectMaxDelayMs?: number
   readonly reconnectJitterRatio?: number
   readonly random?: () => number
+  readonly transportTimeoutMs?: number
+  readonly priceStaleAfterMs?: number
+  readonly healthCheckIntervalMs?: number
+  readonly now?: () => number
   readonly onStatusChange?: (status: ConnectionStatus) => void
   readonly onMarketData?: (message: MarketDataMessage) => void
   readonly onProcessingResult?: (result: ProcessingResult) => void
@@ -73,8 +86,7 @@ export type MarketDataConnectionOptions = {
 }
 
 /**
- * Owns the client-side socket, subscription and automatic reconnection cycle.
- * Stale-data timers are intentionally added later.
+ * Owns the client-side socket, subscription, health checks and reconnection.
  */
 export class MarketDataConnection {
   private readonly createSocket: () => MarketDataSocket
@@ -84,6 +96,10 @@ export class MarketDataConnection {
   private readonly reconnectMaxDelayMs: number
   private readonly reconnectJitterRatio: number
   private readonly random: () => number
+  private readonly transportTimeoutMs: number
+  private readonly priceStaleAfterMs: number
+  private readonly healthCheckIntervalMs: number
+  private readonly now: () => number
   private readonly onStatusChange: (status: ConnectionStatus) => void
   private readonly onMarketData: (message: MarketDataMessage) => void
   private readonly onProcessingResult: (result: ProcessingResult) => void
@@ -94,8 +110,11 @@ export class MarketDataConnection {
   private socket: MarketDataSocket | undefined
   private processor: MarketDataStreamProcessor | undefined
   private reconnectTimer: ReturnType<typeof setTimeout> | undefined
+  private healthCheckTimer: ReturnType<typeof setInterval> | undefined
   private reconnectAttempt = 0
   private disconnectRequested = false
+  private lastTransportActivityAt: number | undefined
+  private lastPriceAt: number | undefined
 
   constructor({
     createSocket,
@@ -105,6 +124,10 @@ export class MarketDataConnection {
     reconnectMaxDelayMs = 5_000,
     reconnectJitterRatio = 0.2,
     random = Math.random,
+    transportTimeoutMs = 3_000,
+    priceStaleAfterMs = 2_000,
+    healthCheckIntervalMs = 250,
+    now = Date.now,
     onStatusChange = () => undefined,
     onMarketData = () => undefined,
     onProcessingResult = () => undefined,
@@ -116,6 +139,9 @@ export class MarketDataConnection {
     }
     assertPositiveDelay(reconnectBaseDelayMs, 'reconnectBaseDelayMs')
     assertPositiveDelay(reconnectMaxDelayMs, 'reconnectMaxDelayMs')
+    assertPositiveDelay(transportTimeoutMs, 'transportTimeoutMs')
+    assertPositiveDelay(priceStaleAfterMs, 'priceStaleAfterMs')
+    assertPositiveDelay(healthCheckIntervalMs, 'healthCheckIntervalMs')
     if (reconnectMaxDelayMs < reconnectBaseDelayMs) {
       throw new RangeError('reconnectMaxDelayMs must be at least reconnectBaseDelayMs.')
     }
@@ -134,6 +160,10 @@ export class MarketDataConnection {
     this.reconnectMaxDelayMs = reconnectMaxDelayMs
     this.reconnectJitterRatio = reconnectJitterRatio
     this.random = random
+    this.transportTimeoutMs = transportTimeoutMs
+    this.priceStaleAfterMs = priceStaleAfterMs
+    this.healthCheckIntervalMs = healthCheckIntervalMs
+    this.now = now
     this.onStatusChange = onStatusChange
     this.onMarketData = onMarketData
     this.onProcessingResult = onProcessingResult
@@ -149,6 +179,14 @@ export class MarketDataConnection {
     return this.reconnectAttempt
   }
 
+  get lastMessageReceivedAt(): number | undefined {
+    return this.lastTransportActivityAt
+  }
+
+  get lastPriceReceivedAt(): number | undefined {
+    return this.lastPriceAt
+  }
+
   connect(): void {
     if (this.currentStatus !== 'disconnected') return
 
@@ -160,6 +198,7 @@ export class MarketDataConnection {
   disconnect(): void {
     this.disconnectRequested = true
     this.clearReconnectTimer()
+    this.stopHealthChecks()
     if (this.currentStatus === 'disconnected') return
     if (this.currentStatus === 'disconnecting') return
 
@@ -184,6 +223,9 @@ export class MarketDataConnection {
       this.processor = new MarketDataStreamProcessor(requestId)
       const socket = this.createSocket()
       this.socket = socket
+      this.lastTransportActivityAt = this.now()
+      this.lastPriceAt = undefined
+      this.startHealthChecks()
       socket.onopen = () => this.handleOpen(socket, requestId)
       socket.onmessage = (event) => this.handleMessage(socket, event.data)
       socket.onclose = () => this.handleClose(socket)
@@ -198,6 +240,7 @@ export class MarketDataConnection {
   private handleOpen(socket: MarketDataSocket, requestId: string): void {
     if (socket !== this.socket || this.currentStatus !== 'connecting') return
 
+    this.lastTransportActivityAt = this.now()
     this.setStatus('subscribing')
     const subscription: SubscribeMessage = {
       type: 'subscribe',
@@ -234,18 +277,33 @@ export class MarketDataConnection {
       this.onIssue({ type: 'processing_result', result })
       if (result.status === 'gap') {
         this.setStatus('out_of_sync')
+        this.stopHealthChecks()
         socket.close(4001, 'Market data sequence gap')
       }
       return
     }
+
+    this.lastTransportActivityAt = this.now()
 
     if (result.message.type === 'subscription_ack') {
       this.setStatus('awaiting_snapshot')
       return
     }
 
+    if (
+      result.message.type === 'price_snapshot' ||
+      result.message.type === 'price_update'
+    ) {
+      this.lastPriceAt = this.now()
+    }
+
     if (result.message.type === 'price_snapshot') {
       this.reconnectAttempt = 0
+      this.setStatus('live')
+    } else if (
+      result.message.type === 'price_update' &&
+      this.currentStatus === 'stale'
+    ) {
       this.setStatus('live')
     }
     this.onMarketData(result.message)
@@ -257,8 +315,11 @@ export class MarketDataConnection {
     socket.onopen = null
     socket.onmessage = null
     socket.onclose = null
+    this.stopHealthChecks()
     this.socket = undefined
     this.processor = undefined
+    this.lastTransportActivityAt = undefined
+    this.lastPriceAt = undefined
 
     if (this.disconnectRequested) {
       this.reconnectAttempt = 0
@@ -272,6 +333,7 @@ export class MarketDataConnection {
   private scheduleReconnect(): void {
     if (this.disconnectRequested || this.reconnectTimer !== undefined) return
 
+    this.stopHealthChecks()
     this.reconnectAttempt += 1
     const delayMs = this.calculateReconnectDelay(this.reconnectAttempt)
     this.setStatus('reconnecting')
@@ -291,14 +353,65 @@ export class MarketDataConnection {
     if (!Number.isFinite(sample) || sample < 0 || sample >= 1) {
       throw new RangeError('The random source must return values in [0, 1).')
     }
-    const jitter = exponentialDelay * this.reconnectJitterRatio * (sample * 2 - 1)
-    return Math.min(this.reconnectMaxDelayMs, Math.max(0, Math.round(exponentialDelay + jitter)))
+    const jitter =
+      exponentialDelay * this.reconnectJitterRatio * (sample * 2 - 1)
+    return Math.min(
+      this.reconnectMaxDelayMs,
+      Math.max(0, Math.round(exponentialDelay + jitter)),
+    )
   }
 
   private clearReconnectTimer(): void {
     if (this.reconnectTimer === undefined) return
     clearTimeout(this.reconnectTimer)
     this.reconnectTimer = undefined
+  }
+
+  private startHealthChecks(): void {
+    this.stopHealthChecks()
+    this.healthCheckTimer = setInterval(
+      () => this.checkHealth(),
+      this.healthCheckIntervalMs,
+    )
+  }
+
+  private stopHealthChecks(): void {
+    if (this.healthCheckTimer === undefined) return
+    clearInterval(this.healthCheckTimer)
+    this.healthCheckTimer = undefined
+  }
+
+  private checkHealth(): void {
+    if (!this.socket || this.disconnectRequested) return
+    if (
+      this.currentStatus === 'disconnected' ||
+      this.currentStatus === 'disconnecting' ||
+      this.currentStatus === 'reconnecting'
+    ) {
+      return
+    }
+
+    const now = this.now()
+    if (
+      this.lastTransportActivityAt !== undefined &&
+      now - this.lastTransportActivityAt >= this.transportTimeoutMs
+    ) {
+      const silentForMs = now - this.lastTransportActivityAt
+      this.stopHealthChecks()
+      this.onIssue({ type: 'transport_timeout', silentForMs })
+      this.socket.close(4003, 'Market data transport timeout')
+      return
+    }
+
+    if (
+      this.currentStatus === 'live' &&
+      this.lastPriceAt !== undefined &&
+      now - this.lastPriceAt >= this.priceStaleAfterMs
+    ) {
+      const ageMs = now - this.lastPriceAt
+      this.setStatus('stale')
+      this.onIssue({ type: 'price_stale', ageMs })
+    }
   }
 
   private setStatus(status: ConnectionStatus): void {
