@@ -13,6 +13,8 @@
   },
   "dependencies": {
     "@vitejs/plugin-react": "latest",
+    "ag-grid-community": "^36.2.0",
+    "ag-grid-react": "^36.2.0",
     "react": "latest",
     "react-dom": "latest",
     "vite": "latest"

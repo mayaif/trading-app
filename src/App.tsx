@@ -1,9 +1,8 @@
-import { useRef } from 'react'
+import { MarketDataGrid } from './components/MarketDataGrid'
 import type { ConnectionStatus } from './market-data/MarketDataConnection'
 import {
   useConnectionStatus,
   useMarketDataLifecycle,
-  useMarketDataSnapshot,
 } from './market-data/useMarketData'
 
 export default function App() {
@@ -36,7 +35,7 @@ export default function App() {
         <div className="trading-layout">
           <section className="panel market-data-panel">
             <div className="panel-heading"><span className="eyebrow">MARKET DATA</span><h2>EUR/USD price stream</h2></div>
-            <MarketDataPreview />
+            <MarketDataGrid />
           </section>
 
           <section className="panel order-panel">
@@ -56,50 +55,8 @@ export default function App() {
   )
 }
 
-function MarketDataPreview() {
-  const snapshot = useMarketDataSnapshot()
-  const renderCount = useRef(0)
-  renderCount.current += 1
-
-  if (!snapshot.initialized) {
-    return (
-      <div className="placeholder market-waiting">
-        <span className="pulse-dot" />
-        <strong>Waiting for initial snapshot</strong>
-        <p>The connection is preparing the first batched market view.</p>
-      </div>
-    )
-  }
-
-  return (
-    <div className="price-preview">
-      <div className="preview-meta">
-        <span>SNAPSHOT v{snapshot.version}</span>
-        <span>{snapshot.changedRows.length} ROWS CHANGED</span>
-        <span>{renderCount.current} COMPONENT RENDERS</span>
-      </div>
-      <div className="preview-row preview-header">
-        <span>VENUE</span><span>BID</span><span>ASK</span><span>SPREAD</span><span>SEQ</span>
-      </div>
-      {snapshot.rows.map((row) => (
-        <div className="preview-row" key={row.key}>
-          <strong>{formatVenue(row.venue)}</strong>
-          <span>{row.bidPrice.toFixed(5)}</span>
-          <span>{row.askPrice.toFixed(5)}</span>
-          <span>{((row.askPrice - row.bidPrice) * 10_000).toFixed(1)}</span>
-          <small>{row.sequence}</small>
-        </div>
-      ))}
-    </div>
-  )
-}
-
 function formatStatus(status: ConnectionStatus): string {
   return status.replaceAll('_', ' ').toUpperCase()
-}
-
-function formatVenue(venue: string): string {
-  return venue.replaceAll('_', ' ')
 }
 
 type PlaceholderProps = { number: string; title: string; description: string }
