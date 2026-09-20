@@ -178,11 +178,160 @@ describe('MarketDataConnection', () => {
 
     connection.connect()
     const firstSocket = createSocket.mock.results[0].value
+    connection.disconnect()
     firstSocket.finishClose()
     connection.connect()
 
     expect(createSocket).toHaveBeenCalledTimes(2)
     expect(connection.status).toBe('connecting')
+  })
+
+  it('reconnects after an unexpected close using the configured delay', () => {
+    const sockets = [new ManualSocket(), new ManualSocket()]
+    const createSocket = vi.fn(() => sockets.shift()!)
+    const schedules: Array<{ attempt: number; delayMs: number }> = []
+    const connection = new MarketDataConnection({
+      createSocket,
+      reconnectBaseDelayMs: 100,
+      reconnectMaxDelayMs: 800,
+      reconnectJitterRatio: 0,
+      onReconnectScheduled: (schedule) => schedules.push(schedule),
+    })
+    connection.connect()
+
+    createSocket.mock.results[0].value.finishClose(1006, false)
+
+    expect(connection.status).toBe('reconnecting')
+    expect(connection.retryAttempt).toBe(1)
+    expect(schedules).toEqual([{ attempt: 1, delayMs: 100 }])
+    vi.advanceTimersByTime(99)
+    expect(createSocket).toHaveBeenCalledOnce()
+
+    vi.advanceTimersByTime(1)
+    expect(createSocket).toHaveBeenCalledTimes(2)
+    expect(connection.status).toBe('connecting')
+  })
+
+  it('uses exponential delays until a connection becomes live', () => {
+    const sockets = [new ManualSocket(), new ManualSocket(), new ManualSocket()]
+    const createSocket = vi.fn(() => sockets.shift()!)
+    const schedules: number[] = []
+    const connection = new MarketDataConnection({
+      createSocket,
+      reconnectBaseDelayMs: 100,
+      reconnectMaxDelayMs: 800,
+      reconnectJitterRatio: 0,
+      onReconnectScheduled: ({ delayMs }) => schedules.push(delayMs),
+    })
+    connection.connect()
+
+    createSocket.mock.results[0].value.finishClose(1006, false)
+    vi.advanceTimersByTime(100)
+    createSocket.mock.results[1].value.finishClose(1006, false)
+
+    expect(schedules).toEqual([100, 200])
+    vi.advanceTimersByTime(199)
+    expect(createSocket).toHaveBeenCalledTimes(2)
+    vi.advanceTimersByTime(1)
+    expect(createSocket).toHaveBeenCalledTimes(3)
+  })
+
+  it('resubscribes with a fresh request ID after reconnecting', () => {
+    const sockets = [new ManualSocket(), new ManualSocket()]
+    const createSocket = vi.fn(() => sockets.shift()!)
+    let requestNumber = 0
+    const connection = new MarketDataConnection({
+      createSocket,
+      createRequestId: () => `request-${++requestNumber}`,
+      reconnectBaseDelayMs: 100,
+      reconnectMaxDelayMs: 100,
+      reconnectJitterRatio: 0,
+    })
+    connection.connect()
+    const firstSocket = createSocket.mock.results[0].value
+    firstSocket.open()
+    firstSocket.finishClose(1006, false)
+    vi.advanceTimersByTime(100)
+    const secondSocket = createSocket.mock.results[1].value
+    secondSocket.open()
+
+    expect(JSON.parse(firstSocket.sentFrames[0]).requestId).toBe('request-1')
+    expect(JSON.parse(secondSocket.sentFrames[0]).requestId).toBe('request-2')
+  })
+
+  it('resets the retry counter only after receiving a fresh snapshot', () => {
+    const sockets = [new ManualSocket(), new ManualSocket()]
+    const createSocket = vi.fn(() => sockets.shift()!)
+    let requestNumber = 0
+    const connection = new MarketDataConnection({
+      createSocket,
+      createRequestId: () => `request-${++requestNumber}`,
+      reconnectBaseDelayMs: 100,
+      reconnectMaxDelayMs: 800,
+      reconnectJitterRatio: 0,
+    })
+    connection.connect()
+    createSocket.mock.results[0].value.finishClose(1006, false)
+    vi.advanceTimersByTime(100)
+
+    const recoveredSocket = createSocket.mock.results[1].value
+    recoveredSocket.open()
+    expect(connection.retryAttempt).toBe(1)
+    recoveredSocket.receiveMessage({
+      ...acknowledgement,
+      requestId: 'request-2',
+    })
+    recoveredSocket.receiveMessage({ ...snapshot, streamId: 'stream-002' })
+
+    expect(connection.status).toBe('live')
+    expect(connection.retryAttempt).toBe(0)
+  })
+
+  it('forces reconnection when a sequence gap makes the stream unsafe', () => {
+    const sockets = [new ManualSocket(), new ManualSocket()]
+    const createSocket = vi.fn(() => sockets.shift()!)
+    const connection = new MarketDataConnection({
+      createSocket,
+      createRequestId: () => 'request-001',
+      reconnectBaseDelayMs: 100,
+      reconnectMaxDelayMs: 100,
+      reconnectJitterRatio: 0,
+    })
+    connection.connect()
+    const socket = createSocket.mock.results[0].value
+    socket.open()
+    socket.receiveMessage(acknowledgement)
+    socket.receiveMessage(snapshot)
+
+    socket.receiveMessage({ ...heartbeat, sequence: 4 })
+
+    expect(connection.status).toBe('out_of_sync')
+    expect(socket.closeCalls).toContainEqual({
+      code: 4001,
+      reason: 'Market data sequence gap',
+    })
+
+    socket.finishClose(4001, true)
+    expect(connection.status).toBe('reconnecting')
+  })
+
+  it('cancels a pending reconnect when explicitly disconnected', () => {
+    const createSocket = vi.fn(() => new ManualSocket())
+    const connection = new MarketDataConnection({
+      createSocket,
+      reconnectBaseDelayMs: 100,
+      reconnectMaxDelayMs: 100,
+      reconnectJitterRatio: 0,
+    })
+    connection.connect()
+    createSocket.mock.results[0].value.finishClose(1006, false)
+    expect(connection.status).toBe('reconnecting')
+
+    connection.disconnect()
+    vi.advanceTimersByTime(1_000)
+
+    expect(connection.status).toBe('disconnected')
+    expect(createSocket).toHaveBeenCalledOnce()
   })
 })
 
@@ -191,6 +340,7 @@ class ManualSocket implements MarketDataSocket {
   onmessage: ((event: SocketMessageEvent) => void) | null = null
   onclose: ((event: SocketCloseEvent) => void) | null = null
   readonly sentFrames: string[] = []
+  readonly closeCalls: Array<{ code: number; reason: string }> = []
   readyState: WebSocketReadyStateValue = WebSocketReadyState.CONNECTING
 
   open(): void {
@@ -211,13 +361,14 @@ class ManualSocket implements MarketDataSocket {
     this.receive(JSON.stringify(message))
   }
 
-  close(): void {
+  close(code = 1000, reason = ''): void {
+    this.closeCalls.push({ code, reason })
     this.readyState = WebSocketReadyState.CLOSING
   }
 
-  finishClose(): void {
+  finishClose(code = 1000, wasClean = true): void {
     this.readyState = WebSocketReadyState.CLOSED
-    this.onclose?.({ type: 'close', code: 1000, reason: '', wasClean: true })
+    this.onclose?.({ type: 'close', code, reason: '', wasClean })
   }
 }
 
