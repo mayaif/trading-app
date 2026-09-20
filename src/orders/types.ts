@@ -34,6 +34,14 @@ export type QuoteReference = Readonly<{
   price: number
 }>
 
+/** Editable user intent before it has been checked against live market data. */
+export type OrderDraft = Readonly<{
+  instrument: CurrencyPair
+  venue: Venue
+  side: OrderSide
+  quantityInBaseCurrency: number
+}>
+
 /** The immutable intent captured when the user presses Buy or Sell. */
 export type OrderRequest = Readonly<{
   clientOrderId: string
