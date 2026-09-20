@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useMemo, useRef } from 'react'
+import { useCallback, useEffect, useRef } from 'react'
 import {
   themeQuartz,
   type ColDef,
+  type GetRowIdParams,
   type GridApi,
   type GridReadyEvent,
   type ValueFormatterParams,
@@ -21,6 +22,41 @@ import {
 import { createGridTransaction } from './gridTransactions'
 
 const EMPTY_ROWS: MarketDataRow[] = []
+
+const DEFAULT_COLUMN_DEFINITION: ColDef<MarketDataRow> = {
+  flex: 1,
+  minWidth: 95,
+  sortable: false,
+  suppressMovable: true,
+  resizable: true,
+  enableCellChangeFlash: true,
+}
+
+const COLUMN_DEFINITIONS: ColDef<MarketDataRow>[] = [
+  {
+    field: 'venue',
+    headerName: 'VENUE',
+    flex: 1.35,
+    minWidth: 135,
+    valueFormatter: ({ value }) => String(value).replaceAll('_', ' '),
+  },
+  { field: 'bidSize', headerName: 'BID SIZE', valueFormatter: formatSize },
+  { field: 'bidPrice', headerName: 'BID', valueFormatter: formatPrice },
+  { field: 'askPrice', headerName: 'ASK', valueFormatter: formatPrice },
+  { field: 'askSize', headerName: 'ASK SIZE', valueFormatter: formatSize },
+  {
+    colId: 'spread',
+    headerName: 'SPREAD',
+    valueGetter: ({ data }) =>
+      data ? (data.askPrice - data.bidPrice) * 10_000 : undefined,
+    valueFormatter: ({ value }) => Number(value).toFixed(1),
+  },
+  { field: 'sequence', headerName: 'SEQ', maxWidth: 90 },
+]
+
+function getMarketDataRowId({ data }: GetRowIdParams<MarketDataRow>): string {
+  return data.key
+}
 
 const marketGridTheme = themeQuartz.withParams({
   accentColor: '#2b9b77',
@@ -45,52 +81,30 @@ export function MarketDataGrid() {
   const apiRef = useRef<GridApi<MarketDataRow> | null>(null)
   const rowsByKeyRef = useRef(new Map<string, MarketDataRow>())
   const appliedVersionRef = useRef(0)
+  const snapshotRef = useRef(snapshot)
 
-  const columnDefs = useMemo<ColDef<MarketDataRow>[]>(
-    () => [
-      {
-        field: 'venue',
-        headerName: 'VENUE',
-        flex: 1.35,
-        minWidth: 135,
-        valueFormatter: ({ value }) => String(value).replaceAll('_', ' '),
-      },
-      { field: 'bidSize', headerName: 'BID SIZE', valueFormatter: formatSize },
-      { field: 'bidPrice', headerName: 'BID', valueFormatter: formatPrice },
-      { field: 'askPrice', headerName: 'ASK', valueFormatter: formatPrice },
-      { field: 'askSize', headerName: 'ASK SIZE', valueFormatter: formatSize },
-      {
-        colId: 'spread',
-        headerName: 'SPREAD',
-        valueGetter: ({ data }) =>
-          data ? (data.askPrice - data.bidPrice) * 10_000 : undefined,
-        valueFormatter: ({ value }) => Number(value).toFixed(1),
-      },
-      { field: 'sequence', headerName: 'SEQ', maxWidth: 90 },
-    ],
-    [],
-  )
+  const applySnapshot = useCallback((api: GridApi<MarketDataRow>) => {
+    const currentSnapshot = snapshotRef.current
+    if (
+      !currentSnapshot.initialized ||
+      currentSnapshot.version === appliedVersionRef.current
+    ) {
+      return
+    }
 
-  const applySnapshot = useCallback(
-    (api: GridApi<MarketDataRow>) => {
-      if (!snapshot.initialized || snapshot.version === appliedVersionRef.current) {
-        return
-      }
-
-      const transaction = createGridTransaction(
-        snapshot,
-        rowsByKeyRef.current,
-        appliedVersionRef.current,
-      )
-      api.applyTransaction(transaction)
-      appliedVersionRef.current = snapshot.version
-    },
-    [snapshot],
-  )
+    const transaction = createGridTransaction(
+      currentSnapshot,
+      rowsByKeyRef.current,
+      appliedVersionRef.current,
+    )
+    api.applyTransaction(transaction)
+    appliedVersionRef.current = currentSnapshot.version
+  }, [])
 
   useEffect(() => {
+    snapshotRef.current = snapshot
     if (apiRef.current) applySnapshot(apiRef.current)
-  }, [applySnapshot])
+  }, [applySnapshot, snapshot])
 
   const handleGridReady = useCallback(
     (event: GridReadyEvent<MarketDataRow>) => {
@@ -143,16 +157,9 @@ export function MarketDataGrid() {
       <div className="grid-body">
         <AgGridReact<MarketDataRow>
           theme={marketGridTheme}
-          columnDefs={columnDefs}
-          defaultColDef={{
-            flex: 1,
-            minWidth: 95,
-            sortable: false,
-            suppressMovable: true,
-            resizable: true,
-            enableCellChangeFlash: true,
-          }}
-          getRowId={({ data }) => data.key}
+          columnDefs={COLUMN_DEFINITIONS}
+          defaultColDef={DEFAULT_COLUMN_DEFINITION}
+          getRowId={getMarketDataRowId}
           rowData={EMPTY_ROWS}
           rowHeight={43}
           headerHeight={34}
