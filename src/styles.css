@@ -56,7 +56,7 @@ h1 small { margin-left: 8px; color: #89938e; font-size: 13px; font-weight: 500; 
 .market-waiting { min-height: 300px; }
 .pulse-dot { width: 10px; height: 10px; margin-bottom: 15px; border-radius: 50%; background: #4fb58f; box-shadow: 0 0 0 0 #4fb58f66; animation: pulse 1.5s infinite; }
 .market-grid { width: 100%; }
-.grid-meta { min-height: 34px; padding: 0 18px; display: flex; align-items: center; gap: 18px; border-bottom: 1px solid var(--line); color: #839089; background: #f8faf7; font: 500 8px DM Mono, monospace; letter-spacing: .06em; }
+.grid-meta { min-height: 34px; padding: 7px 18px; display: flex; flex-wrap: wrap; align-items: center; gap: 8px 18px; border-bottom: 1px solid var(--line); color: #839089; background: #f8faf7; font: 500 8px DM Mono, monospace; letter-spacing: .06em; }
 .grid-body { width: 100%; height: 260px; }
 @keyframes pulse { 70% { box-shadow: 0 0 0 8px #4fb58f00; } 100% { box-shadow: 0 0 0 0 #4fb58f00; } }
 

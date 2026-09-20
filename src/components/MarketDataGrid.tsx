@@ -8,6 +8,7 @@ import {
 } from 'ag-grid-community'
 import { AgGridReact } from 'ag-grid-react'
 import type { MarketDataRow } from '../market-data/MarketDataStore'
+import { useBatchingRates } from '../market-data/useBatchingRates'
 import { useMarketDataSnapshot } from '../market-data/useMarketData'
 import { createGridTransaction } from './gridTransactions'
 
@@ -31,6 +32,7 @@ const marketGridTheme = themeQuartz.withParams({
 
 export function MarketDataGrid() {
   const snapshot = useMarketDataSnapshot()
+  const batchingRates = useBatchingRates()
   const apiRef = useRef<GridApi<MarketDataRow> | null>(null)
   const rowsByKeyRef = useRef(new Map<string, MarketDataRow>())
   const appliedVersionRef = useRef(0)
@@ -102,9 +104,18 @@ export function MarketDataGrid() {
   return (
     <div className="market-grid">
       <div className="grid-meta">
-        <span>SNAPSHOT v{snapshot.version}</span>
-        <span>{snapshot.changedRows.length} ROWS CHANGED</span>
-        <span>100 ms PUBLICATION WINDOW</span>
+        <span title="The latest immutable store publication">
+          SNAPSHOT v{snapshot.version}
+        </span>
+        <span title="All accepted market-data messages, including heartbeats">
+          {Math.round(batchingRates.messagesPerSecond)} MSG/S
+        </span>
+        <span title="Store publications sent to React and ag-Grid">
+          {batchingRates.batchesPerSecond.toFixed(1)} BATCHES/S
+        </span>
+        <span title="Repeated updates collapsed before publication">
+          {Math.round(batchingRates.coalescingRatio * 100)}% COALESCED
+        </span>
       </div>
       <div className="grid-body">
         <AgGridReact<MarketDataRow>
