@@ -89,4 +89,41 @@ describe('MarketDataRuntime', () => {
     runtime.stop()
     vi.runOnlyPendingTimers()
   })
+
+  it('restarts the fake feed when its load profile changes', () => {
+    const createSocket = vi.fn(
+      () => new FakeMarketDataWebSocket({ connectionDelayMs: 0 }),
+    )
+    const runtime = new MarketDataRuntime({ createSocket })
+    const profileListener = vi.fn()
+    runtime.subscribeToLoadProfile(profileListener)
+
+    runtime.start()
+    vi.advanceTimersByTime(0)
+    runtime.setLoadProfile('stress')
+    vi.advanceTimersByTime(0)
+
+    expect(profileListener).toHaveBeenCalledOnce()
+    expect(runtime.getLoadProfileSnapshot()).toBe('stress')
+    expect(createSocket).toHaveBeenNthCalledWith(1, 'normal')
+    expect(createSocket).toHaveBeenNthCalledWith(2, 'stress')
+    expect(runtime.getStatusSnapshot()).toBe('live')
+
+    runtime.stop()
+    vi.runOnlyPendingTimers()
+  })
+
+  it('does not restart when the selected load profile is already active', () => {
+    const createSocket = vi.fn(
+      () => new FakeMarketDataWebSocket({ connectionDelayMs: 0 }),
+    )
+    const runtime = new MarketDataRuntime({ createSocket })
+
+    runtime.start()
+    runtime.setLoadProfile('normal')
+
+    expect(createSocket).toHaveBeenCalledOnce()
+    runtime.stop()
+    vi.runOnlyPendingTimers()
+  })
 })

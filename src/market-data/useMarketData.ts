@@ -16,6 +16,14 @@ export function useConnectionStatus() {
   )
 }
 
+export function useSimulationLoadProfile() {
+  return useSyncExternalStore(
+    marketDataRuntime.subscribeToLoadProfile,
+    marketDataRuntime.getLoadProfileSnapshot,
+    marketDataRuntime.getLoadProfileSnapshot,
+  )
+}
+
 export function useMarketDataSnapshot() {
   return useSyncExternalStore(
     marketDataRuntime.store.subscribe,

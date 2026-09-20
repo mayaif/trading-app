@@ -8,8 +8,16 @@ import {
 } from 'ag-grid-community'
 import { AgGridReact } from 'ag-grid-react'
 import type { MarketDataRow } from '../market-data/MarketDataStore'
+import {
+  marketDataRuntime,
+  SIMULATION_LOAD_PROFILES,
+  type SimulationLoadProfile,
+} from '../market-data/MarketDataRuntime'
 import { useBatchingRates } from '../market-data/useBatchingRates'
-import { useMarketDataSnapshot } from '../market-data/useMarketData'
+import {
+  useMarketDataSnapshot,
+  useSimulationLoadProfile,
+} from '../market-data/useMarketData'
 import { createGridTransaction } from './gridTransactions'
 
 const EMPTY_ROWS: MarketDataRow[] = []
@@ -33,6 +41,7 @@ const marketGridTheme = themeQuartz.withParams({
 export function MarketDataGrid() {
   const snapshot = useMarketDataSnapshot()
   const batchingRates = useBatchingRates()
+  const loadProfile = useSimulationLoadProfile()
   const apiRef = useRef<GridApi<MarketDataRow> | null>(null)
   const rowsByKeyRef = useRef(new Map<string, MarketDataRow>())
   const appliedVersionRef = useRef(0)
@@ -116,6 +125,20 @@ export function MarketDataGrid() {
         <span title="Repeated updates collapsed before publication">
           {Math.round(batchingRates.coalescingRatio * 100)}% COALESCED
         </span>
+        <div className="load-control" aria-label="Simulation load">
+          {SIMULATION_LOAD_PROFILES.map((profile) => (
+            <button
+              className={profile.id === loadProfile ? 'load-active' : undefined}
+              key={profile.id}
+              type="button"
+              title={`${profile.targetUpdatesPerSecond} target price updates per second`}
+              aria-pressed={profile.id === loadProfile}
+              onClick={() => selectLoadProfile(profile.id)}
+            >
+              {profile.label} {profile.targetUpdatesPerSecond}/s
+            </button>
+          ))}
+        </div>
       </div>
       <div className="grid-body">
         <AgGridReact<MarketDataRow>
@@ -140,6 +163,10 @@ export function MarketDataGrid() {
       </div>
     </div>
   )
+}
+
+function selectLoadProfile(profile: SimulationLoadProfile): void {
+  marketDataRuntime.setLoadProfile(profile)
 }
 
 function formatPrice({ value }: ValueFormatterParams<MarketDataRow, number>): string {
